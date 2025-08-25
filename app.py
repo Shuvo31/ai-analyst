@@ -29,8 +29,6 @@ except:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     DATABASE = os.getenv("DATABASE")
 
-
-
 DATABASE_URL = DATABASE.strip()
 
 MASTER_XLSX = "genai_job_impact_master.xlsx"  # optional: one-time import + downloadable snapshot
@@ -64,7 +62,7 @@ def role_name_from_jobdesc(jd: str, index: int) -> str:
     else:
         first = next((ln.strip() for ln in jd.splitlines() if ln.strip()), f"Job_{index+1}")
         name = first.split("|")[0].split(" - ")[0].strip()
-    name = re.sub(r'[\[\]\*\?\/\\:]', "", name)[:120]
+    name = re.sub(r'[\[\]\*\?/\\:]', "", name)[:120]
     return name or f"Job_{index+1}"
 
 def parse_markdown_table(md_text: str) -> pd.DataFrame:
@@ -163,7 +161,7 @@ def get_engine() -> sa.Engine:
 
 def ensure_sql_schema(engine: sa.Engine):
     with engine.begin() as conn:
-        conn.exec_driver_sql("""
+        conn.execute(text("""
         CREATE TABLE IF NOT EXISTS all_jobs (
             id SERIAL PRIMARY KEY,
             job_title TEXT,
@@ -178,31 +176,29 @@ def ensure_sql_schema(engine: sa.Engine):
             task_norm TEXT,
             CONSTRAINT uq_job_task UNIQUE (job_title, task_norm)
         );
-        """)
-        conn.exec_driver_sql("""
+        """))
+        
+        conn.execute(text("""
         CREATE TABLE IF NOT EXISTS synthesis (
             id SERIAL PRIMARY KEY,
             job_title TEXT,
             synthesis TEXT,
             run_id TEXT,
-            jd_hash TEXT
+            jd_hash TEXT,
+            CONSTRAINT uq_job_synthesis UNIQUE (job_title, jd_hash)
         );
-        """)
-        conn.exec_driver_sql("""
-        CREATE TABLE IF NOT EXISTS app_migrations (
-            key TEXT PRIMARY KEY,
-            applied_at TIMESTAMP DEFAULT NOW()
-        );
-        """)
+        """))
+
 
 def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
     if df.empty:
         return
+
     out = pd.DataFrame({
         "job_title": df.get("Job Title", ""),
         "task": df.get("Task", ""),
         "time_allocation": df.get("Time allocation %", ""),
-        "ai_impact_score": df.get("AI Impact Score (0–100)", ""),
+        "ai_impact_score": df.get("AI Impact Score (0–100)", ""),   # 👈 suspect line
         "impact_explanation": df.get("Impact Explanation", ""),
         "task_transformation": df.get("Task Transformation %", ""),
         "tooling_nature": df.get("Tooling nature % generic vs specific", ""),
@@ -210,7 +206,16 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
         "jd_hash": df.get("JD Hash", ""),
         "task_norm": df["Task"].apply(normalize_task) if "Task" in df.columns else ""
     }).replace({pd.NA: "", None: ""})
+
+    # Deduplicate before insert
+    out = out.drop_duplicates(subset=["job_title", "task_norm"], keep="last")
+
     rows = out.to_dict(orient="records")
+
+    # ✅ ADD THIS DEBUG PRINT HERE
+    if rows:
+        print("DEBUG first row:", rows[0].get("ai_impact_score"))
+
     with engine.begin() as conn:
         stmt = text("""
             INSERT INTO all_jobs
@@ -218,7 +223,14 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
              task_transformation, tooling_nature, run_id, jd_hash, task_norm)
             VALUES (:job_title, :task, :time_allocation, :ai_impact_score, :impact_explanation,
                     :task_transformation, :tooling_nature, :run_id, :jd_hash, :task_norm)
-            ON CONFLICT (job_title, task_norm) DO NOTHING;
+            ON CONFLICT (job_title, task_norm) DO UPDATE SET
+                time_allocation = EXCLUDED.time_allocation,
+                ai_impact_score = EXCLUDED.ai_impact_score,
+                impact_explanation = EXCLUDED.impact_explanation,
+                task_transformation = EXCLUDED.task_transformation,
+                tooling_nature = EXCLUDED.tooling_nature,
+                run_id = EXCLUDED.run_id,
+                jd_hash = EXCLUDED.jd_hash;
         """)
         conn.execute(stmt, rows)
 
@@ -229,7 +241,8 @@ def append_synthesis_sql(engine: sa.Engine, syn_rows: list[dict]):
         conn.execute(
             text("""
                 INSERT INTO synthesis (job_title, synthesis, run_id, jd_hash)
-                VALUES (:job_title, :synthesis, :run_id, :jd_hash);
+                VALUES (:job_title, :synthesis, :run_id, :jd_hash)
+                ON CONFLICT (job_title, jd_hash) DO NOTHING;
             """),
             [ { 
                 "job_title": r.get("job_title",""),
@@ -402,6 +415,12 @@ Round percentages to the nearest 5%. Do not invent tasks that are absent from th
                                    "Run ID": [datetime.now().isoformat(timespec="seconds")], "JD Hash": [""]})
             else:
                 df = add_provenance(df, role_name, jd)
+                # session-level dedup for same run (do not alter UI)
+                if "Task" in df.columns:
+                    _tmp = df.copy()
+                    _tmp["task_norm"] = _tmp["Task"].apply(normalize_task)
+                    _tmp = _tmp.drop_duplicates(subset=["Job Title", "task_norm"], keep="last")
+                    df = _tmp.drop(columns=["task_norm"], errors="ignore")
 
             st.session_state["new_reports"][role_name] = df
             st.session_state["new_synthesis"][role_name] = synthesis_text
@@ -421,6 +440,8 @@ if st.session_state["new_reports"]:
         existing_tasks, existing_syn = load_master_excel()
         if "Task" in new_tasks.columns:
             new_tasks["Task_norm"] = new_tasks["Task"].apply(normalize_task)
+            # Dedup within new set
+            new_tasks = new_tasks.drop_duplicates(subset=["Job Title", "Task_norm"], keep="last")
         if not existing_tasks.empty and "Task" in existing_tasks.columns:
             existing_tasks["Task_norm"] = existing_tasks["Task"].apply(normalize_task)
         if existing_tasks.empty:
@@ -449,6 +470,9 @@ if st.session_state["new_reports"]:
             new_syn_rows.append({"Job Title": role, "Synthesis": syn, "Run ID": run_id, "JD Hash": jd_hash})
         new_syn_df = pd.DataFrame(new_syn_rows, columns=["Job Title", "Synthesis", "Run ID", "JD Hash"])
         all_syn = pd.concat([existing_syn, new_syn_df], ignore_index=True) if not existing_syn.empty else new_syn_df
+        # Dedup synthesis Excel snapshot
+        if not all_syn.empty and "JD Hash" in all_syn.columns:
+            all_syn = all_syn.drop_duplicates(subset=["Job Title", "JD Hash"], keep="last")
 
         # Excel snapshot: write + download
         buf = write_master_excel(all_tasks, all_syn)
