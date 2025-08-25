@@ -28,7 +28,7 @@ except:
     # Fallback to environment variables (for local development or other deployments)
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     DATABASE = os.getenv("DATABASE")
-
+    
 DATABASE_URL = DATABASE.strip()
 
 MASTER_XLSX = "genai_job_impact_master.xlsx"  # optional: one-time import + downloadable snapshot
@@ -323,8 +323,24 @@ st.sidebar.caption(
 )
 
 # Prominent Generate button
-generate_clicked_sidebar = st.sidebar.button("Generate Report", type="primary")
-generate_clicked_main = st.button("🚀 Generate Report", type="primary")
+generate_clicked_sidebar = st.sidebar.button("🚀 Generate Report", type="primary")
+col1, col2 = st.columns([1, 1])
+
+with col1:
+    generate_clicked_main = st.button("🚀 Generate Report", type="primary")
+
+with col2:
+    st.markdown(
+        """
+        <a href="https://app.powerbi.com/view?r=eyJrIjoiMDFhMGVlOGItOTY5MC00ZTRhLWI5ZTEtNmMwNDQxNTUzNTNmIiwidCI6IjA3NmEzOTkyLTA0ZjgtNDcwMC05ODQ0LTA4YzM3NDc3NzdlZiJ9" 
+           target="_blank">
+            <button style="background-color:#0078D4; color:white; padding:0.6em 1.2em; border:none; border-radius:8px; cursor:pointer;">
+                📊 Dashboard
+            </button>
+        </a>
+        """,
+        unsafe_allow_html=True
+    )
 
 
 # =========================
