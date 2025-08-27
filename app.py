@@ -6,7 +6,7 @@ import hashlib
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from openai import OpenAI
+from openai import AzureOpenAI
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Alignment
@@ -20,11 +20,28 @@ from dotenv import load_dotenv
 load_dotenv()
 
 try:
-    OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+    AZURE_OPENAI_ENDPOINT = st.secrets["AZURE_OPENAI_ENDPOINT"]
+    AZURE_OPENAI_API_KEY = st.secrets["AZURE_OPENAI_API_KEY"]
+    AZURE_OPENAI_DEPLOYMENT = st.secrets["AZURE_OPENAI_DEPLOYMENT"]  # your deployment name
     DATABASE = st.secrets["DATABASE"]
 except:
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+    AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
+    AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
     DATABASE = os.getenv("DATABASE")
+
+if not AZURE_OPENAI_API_KEY or not AZURE_OPENAI_ENDPOINT or not AZURE_OPENAI_DEPLOYMENT:
+    st.error("Azure OpenAI environment variables are not set.")
+    st.stop()
+if not DATABASE:
+    st.error("DATABASE env var is not set. Use the External Database URL with ?sslmode=require.")
+    st.stop()
+
+client = AzureOpenAI(
+    api_key=AZURE_OPENAI_API_KEY,
+    api_version="2024-06-01",  # ✅ pick correct API version from Azure Portal
+    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+)
 
 DATABASE_URL = DATABASE.strip()
 MASTER_XLSX = "genai_job_impact_master.xlsx"
@@ -33,15 +50,6 @@ SYNTHESIS_SHEET = "Synthesis"
 
 st.set_page_config(page_title="GenAI Job Impact Analyst — Postgres on Render", layout="wide")
 st.title("💼 GenAI Job Impact Analyst — Postgres (Render)")
-
-if not OPENAI_API_KEY:
-    st.error("OPENAI_API_KEY env var is not set.")
-    st.stop()
-if not DATABASE_URL:
-    st.error("DATABASE_URL env var is not set. Use the External Database URL with ?sslmode=require.")
-    st.stop()
-
-client = OpenAI(api_key=OPENAI_API_KEY)
 
 # =========================
 # Helpers
@@ -107,7 +115,6 @@ def add_provenance(df: pd.DataFrame, role_name: str, jd_text: str) -> pd.DataFra
         df["Job Title"] = df["Job Title"].replace("", role_name).fillna(role_name)
     df["Run ID"] = run_id
     df["JD Hash"] = jd_hash
-    # Ensure Job Category exists
     if "Job Category" not in df.columns:
         df["Job Category"] = ""
     return df
@@ -190,7 +197,6 @@ def ensure_sql_schema(engine: sa.Engine):
 def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
     if df.empty:
         return
-
     out = pd.DataFrame({
         "job_title": df.get("Job Title", ""),
         "task": df.get("Task", ""),
@@ -199,7 +205,7 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
         "impact_explanation": df.get("Impact Explanation", ""),
         "task_transformation": df.get("Task Transformation %", ""),
         "tooling_nature": df.get("Tooling nature % generic vs specific", ""),
-        "job_category": df.get("Job Category", ""),  # ✅ New
+        "job_category": df.get("Job Category", ""),
         "run_id": df.get("Run ID", ""),
         "jd_hash": df.get("JD Hash", ""),
         "task_norm": df["Task"].apply(normalize_task) if "Task" in df.columns else ""
@@ -344,13 +350,13 @@ Use Markdown. Keep the table width manageable (wrap long explanations after 80 c
 Round percentages to the nearest 5%. Do not invent tasks that are absent from the description.
 """
 
-    with st.spinner("Analyzing job description(s) with GPT-4o..."):
+    with st.spinner("Analyzing job description(s) with Azure OpenAI..."):
         for idx, jd in enumerate(job_descriptions):
             role_name = role_name_from_jobdesc(jd, idx)
             user_prompt = f"Here is the job description:\n\n{jd}"
 
             resp = client.chat.completions.create(
-                model="gpt-4o",
+                model=AZURE_OPENAI_DEPLOYMENT,  # ✅ Deployment name from Azure Portal
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
