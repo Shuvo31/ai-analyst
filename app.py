@@ -13,32 +13,27 @@ from openpyxl.styles import Alignment
 import sqlalchemy as sa
 from sqlalchemy import text
 from dotenv import load_dotenv
+
 # =========================
 # Config (Render environment)
 # =========================
-# Read from environment for safety. In Render, set these in the dashboard.
-
 load_dotenv()
 
 try:
-    # Try Streamlit secrets first (when deployed to Streamlit Cloud)
     OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
     DATABASE = st.secrets["DATABASE"]
 except:
-    # Fallback to environment variables (for local development or other deployments)
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     DATABASE = os.getenv("DATABASE")
-    
-DATABASE_URL = DATABASE.strip()
 
-MASTER_XLSX = "genai_job_impact_master.xlsx"  # optional: one-time import + downloadable snapshot
+DATABASE_URL = DATABASE.strip()
+MASTER_XLSX = "genai_job_impact_master.xlsx"
 ALL_JOBS_SHEET = "All Jobs"
 SYNTHESIS_SHEET = "Synthesis"
 
 st.set_page_config(page_title="GenAI Job Impact Analyst — Postgres on Render", layout="wide")
 st.title("💼 GenAI Job Impact Analyst — Postgres (Render)")
 
-# Fail fast if env not set
 if not OPENAI_API_KEY:
     st.error("OPENAI_API_KEY env var is not set.")
     st.stop()
@@ -49,7 +44,7 @@ if not DATABASE_URL:
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # =========================
-# Helpers (parsing, normalize, etc.)
+# Helpers
 # =========================
 def extract_roles_from_text(raw_text: str) -> list[str]:
     blocks = re.split(r'\n\s*---\s*\n', raw_text.strip(), flags=re.MULTILINE)
@@ -112,10 +107,13 @@ def add_provenance(df: pd.DataFrame, role_name: str, jd_text: str) -> pd.DataFra
         df["Job Title"] = df["Job Title"].replace("", role_name).fillna(role_name)
     df["Run ID"] = run_id
     df["JD Hash"] = jd_hash
+    # Ensure Job Category exists
+    if "Job Category" not in df.columns:
+        df["Job Category"] = ""
     return df
 
 # =========================
-# Excel (optional snapshot + one-time import)
+# Excel
 # =========================
 def load_master_excel() -> tuple[pd.DataFrame, pd.DataFrame]:
     if not os.path.exists(MASTER_XLSX):
@@ -154,7 +152,7 @@ def write_master_excel(all_jobs: pd.DataFrame, synthesis: pd.DataFrame) -> io.By
     return buf
 
 # =========================
-# Postgres (Render) via SQLAlchemy
+# Postgres
 # =========================
 def get_engine() -> sa.Engine:
     return sa.create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
@@ -171,13 +169,13 @@ def ensure_sql_schema(engine: sa.Engine):
             impact_explanation TEXT,
             task_transformation TEXT,
             tooling_nature TEXT,
+            job_category TEXT,
             run_id TEXT,
             jd_hash TEXT,
             task_norm TEXT,
             CONSTRAINT uq_job_task UNIQUE (job_title, task_norm)
         );
         """))
-        
         conn.execute(text("""
         CREATE TABLE IF NOT EXISTS synthesis (
             id SERIAL PRIMARY KEY,
@@ -189,7 +187,6 @@ def ensure_sql_schema(engine: sa.Engine):
         );
         """))
 
-
 def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
     if df.empty:
         return
@@ -198,37 +195,32 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
         "job_title": df.get("Job Title", ""),
         "task": df.get("Task", ""),
         "time_allocation": df.get("Time allocation %", ""),
-        "ai_impact_score": df.get("AI Impact Score (0–100)", ""),   # 👈 suspect line
+        "ai_impact_score": df.get("AI Impact Score (0–100)", ""),
         "impact_explanation": df.get("Impact Explanation", ""),
         "task_transformation": df.get("Task Transformation %", ""),
         "tooling_nature": df.get("Tooling nature % generic vs specific", ""),
+        "job_category": df.get("Job Category", ""),  # ✅ New
         "run_id": df.get("Run ID", ""),
         "jd_hash": df.get("JD Hash", ""),
         "task_norm": df["Task"].apply(normalize_task) if "Task" in df.columns else ""
     }).replace({pd.NA: "", None: ""})
 
-    # Deduplicate before insert
     out = out.drop_duplicates(subset=["job_title", "task_norm"], keep="last")
-
     rows = out.to_dict(orient="records")
-
-    # ✅ ADD THIS DEBUG PRINT HERE
-    if rows:
-        print("DEBUG first row:", rows[0].get("ai_impact_score"))
-
     with engine.begin() as conn:
         stmt = text("""
             INSERT INTO all_jobs
             (job_title, task, time_allocation, ai_impact_score, impact_explanation,
-             task_transformation, tooling_nature, run_id, jd_hash, task_norm)
+             task_transformation, tooling_nature, job_category, run_id, jd_hash, task_norm)
             VALUES (:job_title, :task, :time_allocation, :ai_impact_score, :impact_explanation,
-                    :task_transformation, :tooling_nature, :run_id, :jd_hash, :task_norm)
+                    :task_transformation, :tooling_nature, :job_category, :run_id, :jd_hash, :task_norm)
             ON CONFLICT (job_title, task_norm) DO UPDATE SET
                 time_allocation = EXCLUDED.time_allocation,
                 ai_impact_score = EXCLUDED.ai_impact_score,
                 impact_explanation = EXCLUDED.impact_explanation,
                 task_transformation = EXCLUDED.task_transformation,
                 tooling_nature = EXCLUDED.tooling_nature,
+                job_category = EXCLUDED.job_category,
                 run_id = EXCLUDED.run_id,
                 jd_hash = EXCLUDED.jd_hash;
         """)
@@ -252,67 +244,18 @@ def append_synthesis_sql(engine: sa.Engine, syn_rows: list[dict]):
               } for r in syn_rows ]
         )
 
-# One-time Excel -> Postgres import (idempotent)
-def migrate_excel_to_postgres(engine: sa.Engine, excel_path: str = MASTER_XLSX):
-    with engine.begin() as conn:
-        conn.exec_driver_sql("""
-            CREATE TABLE IF NOT EXISTS app_migrations (
-                key TEXT PRIMARY KEY,
-                applied_at TIMESTAMP DEFAULT NOW()
-            );
-        """)
-        if conn.execute(text("SELECT 1 FROM app_migrations WHERE key='excel_to_pg'")).first():
-            return
-
-    if not os.path.exists(excel_path):
-        # still mark as done to skip re-checking each run
-        with engine.begin() as conn:
-            conn.execute(text("""
-                INSERT INTO app_migrations(key) VALUES ('excel_to_pg')
-                ON CONFLICT (key) DO NOTHING;
-            """))
-        return
-
-    try:
-        xl = pd.ExcelFile(excel_path)
-        jobs = pd.read_excel(xl, sheet_name=ALL_JOBS_SHEET)
-        syn  = pd.read_excel(xl, sheet_name=SYNTHESIS_SHEET)
-    except Exception:
-        jobs, syn = pd.DataFrame(), pd.DataFrame()
-
-    if not jobs.empty and "Task" in jobs.columns:
-        jobs["task_norm"] = jobs["Task"].apply(normalize_task)
-        jobs = jobs.drop_duplicates(subset=["Job Title", "task_norm"], keep="last")
-
-    upsert_all_jobs_sql(engine, jobs)
-
-    if not syn.empty:
-        syn_rows = [{
-            "job_title": r.get("Job Title",""),
-            "synthesis": r.get("Synthesis",""),
-            "run_id":    r.get("Run ID",""),
-            "jd_hash":   r.get("JD Hash",""),
-        } for r in syn.to_dict(orient="records")]
-        append_synthesis_sql(engine, syn_rows)
-
-    with engine.begin() as conn:
-        conn.execute(text("""
-            INSERT INTO app_migrations(key) VALUES ('excel_to_pg')
-            ON CONFLICT (key) DO NOTHING;
-        """))
-
 # =========================
 # UI State
 # =========================
 if "new_reports" not in st.session_state:
-    st.session_state["new_reports"] = {}   # role -> df
+    st.session_state["new_reports"] = {}
 if "new_synthesis" not in st.session_state:
-    st.session_state["new_synthesis"] = {} # role -> text
+    st.session_state["new_synthesis"] = {}
 if "new_jd_text" not in st.session_state:
-    st.session_state["new_jd_text"] = {}   # role -> raw JD
+    st.session_state["new_jd_text"] = {}
 
 # =========================
-# Sidebar & Main Controls
+# Sidebar
 # =========================
 st.sidebar.header("Upload or Write Job Description(s)")
 uploaded_file = st.sidebar.file_uploader("Upload job descriptions (.txt or .csv)", type=["txt", "csv"])
@@ -322,29 +265,24 @@ st.sidebar.caption(
     "In .csv, provide one job description per row under a column named 'JobDescription'."
 )
 
-# Prominent Generate button
 generate_clicked_sidebar = st.sidebar.button("🚀 Generate Report", type="primary")
 col1, col2 = st.columns([1, 1])
-
 with col1:
     generate_clicked_main = st.button("🚀 Generate Report", type="primary")
-
 with col2:
     st.markdown(
         """
-        <a href="https://app.powerbi.com/view?r=eyJrIjoiMDFhMGVlOGItOTY5MC00ZTRhLWI5ZTEtNmMwNDQxNTUzNTNmIiwidCI6IjA3NmEzOTkyLTA0ZjgtNDcwMC05ODQ0LTA4YzM3NDc3NzdlZiJ9" 
-           target="_blank">
+        <a href="https://app.powerbi.com/view?r=eyJrIjoiMDFhMGVlOGItOTY5MC00ZTRhLWI5ZTEtNmMwNDQxNTUzNTNmIiwidCI6IjA3NmEzOTkyLTA0ZjgtNDcwMC05ODQ0LTA4YzM3NDc3NzdlZiJ9" target="_blank">
             <button style="background-color:#0078D4; color:white; padding:0.6em 1.2em; border:none; border-radius:8px; cursor:pointer;">
-                📊 Dashboard
+                📊 Open Dashboard
             </button>
         </a>
         """,
         unsafe_allow_html=True
     )
 
-
 # =========================
-# Preflight DB (connect, ensure schema, migrate once)
+# Preflight DB
 # =========================
 engine = get_engine()
 try:
@@ -356,7 +294,6 @@ except Exception as e:
     st.stop()
 
 ensure_sql_schema(engine)
-migrate_excel_to_postgres(engine)
 
 # =========================
 # Generate
@@ -369,7 +306,6 @@ if generate_clicked_sidebar or generate_clicked_main:
             job_descriptions = extract_roles_from_text(raw_text)
         elif uploaded_file.name.endswith(".csv"):
             df_csv = pd.read_csv(uploaded_file)
-            # Expecting a column named 'JobDescription'
             if "JobDescription" in df_csv.columns:
                 job_descriptions = df_csv["JobDescription"].dropna().astype(str).tolist()
             else:
@@ -386,9 +322,10 @@ You are GenAI-Job-Impact-Analyst, an expert designed to evaluate how generative 
 Your mission
 Input: You will receive the full text of a Club Med job description.
 Output: Produce a table – one line per task – with the following six columns: 
-| Task | Time allocation % | AI Impact Score (0–100) | Impact Explanation | Task Transformation % | Tooling nature % generic vs specific |
+| Task | Job Category | Time allocation % | AI Impact Score (0–100) | Impact Explanation | Task Transformation % | Tooling nature % generic vs specific |
 
 Task – concise verb-phrase copied or paraphrased from the job description. 
+Job Category - one of: IT, Marketing, HR, Finance, Operations, Legal, R&D, Customer Service, Other.
 Time allocation % – your best estimate of the share of the job’s total time this task takes (sum ≈ 100%). 
 AI Impact Score – how strongly Gen-AI could affect the task (0 = no impact, 100 = fully automatable/augmented). 
 Impact Explanation – 2–3 sentences justifying the chosen score. 
@@ -431,7 +368,6 @@ Round percentages to the nearest 5%. Do not invent tasks that are absent from th
                                    "Run ID": [datetime.now().isoformat(timespec="seconds")], "JD Hash": [""]})
             else:
                 df = add_provenance(df, role_name, jd)
-                # session-level dedup for same run (do not alter UI)
                 if "Task" in df.columns:
                     _tmp = df.copy()
                     _tmp["task_norm"] = _tmp["Task"].apply(normalize_task)
@@ -443,23 +379,22 @@ Round percentages to the nearest 5%. Do not invent tasks that are absent from th
             st.session_state["new_jd_text"][role_name] = jd
 
 # =========================
-# Persist (Excel snapshot + Postgres write)
+# Persist (Excel + Postgres)
 # =========================
 if st.session_state["new_reports"]:
     st.divider()
     st.subheader("⬇️ Update Excel (optional) + Postgres (Render)")
     if st.button("Update Master"):
-        # Build new tasks
         new_tasks = pd.concat(st.session_state["new_reports"].values(), ignore_index=True)
 
-        # Excel snapshot (optional for download)
+        # Excel snapshot
         existing_tasks, existing_syn = load_master_excel()
         if "Task" in new_tasks.columns:
             new_tasks["Task_norm"] = new_tasks["Task"].apply(normalize_task)
-            # Dedup within new set
             new_tasks = new_tasks.drop_duplicates(subset=["Job Title", "Task_norm"], keep="last")
         if not existing_tasks.empty and "Task" in existing_tasks.columns:
             existing_tasks["Task_norm"] = existing_tasks["Task"].apply(normalize_task)
+
         if existing_tasks.empty:
             all_tasks = new_tasks.copy()
         else:
@@ -478,6 +413,7 @@ if st.session_state["new_reports"]:
         if "Task_norm" in all_tasks.columns:
             all_tasks.drop(columns=["Task_norm"], inplace=True, errors="ignore")
 
+        # Synthesis
         new_syn_rows = []
         for role, syn in st.session_state["new_synthesis"].items():
             jd_text = st.session_state["new_jd_text"].get(role, "")
@@ -486,11 +422,9 @@ if st.session_state["new_reports"]:
             new_syn_rows.append({"Job Title": role, "Synthesis": syn, "Run ID": run_id, "JD Hash": jd_hash})
         new_syn_df = pd.DataFrame(new_syn_rows, columns=["Job Title", "Synthesis", "Run ID", "JD Hash"])
         all_syn = pd.concat([existing_syn, new_syn_df], ignore_index=True) if not existing_syn.empty else new_syn_df
-        # Dedup synthesis Excel snapshot
         if not all_syn.empty and "JD Hash" in all_syn.columns:
             all_syn = all_syn.drop_duplicates(subset=["Job Title", "JD Hash"], keep="last")
 
-        # Excel snapshot: write + download
         buf = write_master_excel(all_tasks, all_syn)
         st.success(f"Master Excel updated: {MASTER_XLSX}")
         st.download_button(
@@ -500,7 +434,7 @@ if st.session_state["new_reports"]:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        # Postgres: upsert tasks + append synthesis
+        # Postgres
         upsert_all_jobs_sql(engine, new_tasks if "Task" in new_tasks.columns else all_tasks)
         syn_rows = []
         for role, syn in st.session_state["new_synthesis"].items():
@@ -514,7 +448,6 @@ if st.session_state["new_reports"]:
         append_synthesis_sql(engine, syn_rows)
         st.success("✅ Postgres updated")
 
-        # Clear buffers
         st.session_state["new_reports"].clear()
         st.session_state["new_synthesis"].clear()
         st.session_state["new_jd_text"].clear()
