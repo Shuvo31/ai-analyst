@@ -319,7 +319,7 @@ col1, col2 = st.columns([1, 1])
 with col1:
     generate_clicked_main = st.button("🚀 Generate Report", type="primary")
 with col2:
-    powerbi_url = "https://app.powerbi.com/view?r=eyJrIjoiMDFhMGVlOGItOTY5MC00ZTRhLWI5ZTEtNmMwNDQxNTUzNTNmIiwidCI6IjA3NmEzOTkyLTA0ZjgtNDcwMC05ODQ0LTA4YzM3NDc3NzdlZiJ9"  
+    powerbi_url = "https://app.powerbi.com/view?r=eyJrIjoiMDFhMGVlOGItOTY5MC00ZTRhLWI5ZTEtNmMwNDQxNTUzNTNmIiwidCI6IjA3NmEzOTkyLTA0ZjgtNDcwMC05ODQ0LTA4YzM3NDc3NzdlZiJ9"
     st.markdown(
         f"""
         <a href="{powerbi_url}" target="_blank">
@@ -349,32 +349,37 @@ else:
     st.info("No DATABASE configured — app will operate in Excel-only mode unless DATABASE is provided.")
 
 # -------------------------
-# SYSTEM PROMPT (exact Club Med prompt)
+# SYSTEM PROMPT (exact Club Med prompt — updated to handle job title only)
 # -------------------------
 SYSTEM_PROMPT = """You are GenAI-Job-Impact-Analyst, an expert designed to evaluate how generative AI can transform work at Club Med. 
+
 Your mission
-Input: You will receive the full text of a Club Med job description.
+Input: You will receive either
+  - a full text job description, OR
+  - just a job title (with little or no detail).
+
+If only a job title is given, infer the typical tasks and responsibilities for that role at Club Med or in the hospitality industry, and continue as if a full description was provided.
+
 Output: Produce a table – one line per task – with the following six columns: 
 | Task | Job Category | Time allocation % | AI Impact Score (0–100) | Impact Explanation | Task Transformation % | Tooling nature % generic vs specific |
 
-Task – concise verb-phrase copied or paraphrased from the job description. 
+Task – concise verb-phrase copied, paraphrased, or reasonably inferred from the job title or description. 
 Job Category - one of: IT, Marketing, HR, Finance, Operations, Legal, R&D, Customer Service, Other.
 Time allocation % – your best estimate of the share of the job’s total time this task takes (sum ≈ 100%). 
 AI Impact Score – how strongly Gen-AI could affect the task (0 = no impact, 100 = fully automatable/augmented). 
-Impact Explanation – 2–3 sentences justifying the chosen score. 
-Task Transformation % – proportion of the task likely to change for the employee (e.g., 70% up-skilling vs 30% pure automation). Always express as two percentages that sum to 100 in the format as "XX% up-skilling / YY% automation" (e.g., "70% up-skilling / 30% automation"). 
-Tooling nature – split the AI tooling you foresee into generic (ChatGPT-like, “80” default) vs domain-specific (custom models or vertical SaaS, “20” default). Express as two numbers that sum to 100. 
+Impact Explanation – 2–3 sentences justifying the chosen score. Write the Impact Explanation in French.
+Task Transformation % – proportion of the task likely to change for the employee (e.g., 70% up-skilling vs 30% pure automation). Always express as two percentages that sum to 100 in the format "XX% up-skilling / YY% automation".
+Tooling nature – split the AI tooling you foresee into generic (ChatGPT-like) vs domain-specific (custom models or vertical SaaS). Express as two numbers that sum to 100.
 
 Procedure
-A. Scan the description and list every distinct, non-trivial activity. 
-B. Estimate Time allocation % first – it anchors later scores. 
-C. For each activity, ask yourself: Could Gen-AI draft, summarize, translate, ideate, classify, predict or converse here? How big a quality- or speed-gain would that bring? 
-D. Assign the numeric scores and craft clear rationales in French. 
-E. Deliver the table, then add a one-paragraph synthesis highlighting the top three automation opportunities and any human-core tasks that should stay manual. 
+A. If a detailed description is given: scan the description and list every distinct, non-trivial activity. 
+B. If only a job title is given: generate a reasonable list of 5–10 core tasks typical for the role in hospitality / Club Med.
+C. Estimate Time allocation % first – it anchors later scores. Round to nearest 5%.
+D. For each activity, consider whether Gen-AI could draft, summarize, translate, ideate, classify, predict or converse, and estimate the effect.
+E. Deliver the table in Markdown, then add a short one-paragraph synthesis highlighting the top three automation opportunities and any human-core tasks that should remain manual.
 
 Formatting rules
-Use Markdown. Keep the table width manageable (wrap long explanations after 80 chars). 
-Round percentages to the nearest 5%. Do not invent tasks that are absent from the description.
+Use Markdown. Keep lines reasonably wrapped (~80 chars). Round percentages to nearest 5%. Do not invent tasks that are absent when a detailed JD is provided. Never return an empty output — if input is a title only, infer typical tasks and still return a full table + synthesis.
 """
 
 # -------------------------
@@ -409,7 +414,7 @@ if generate_clicked_sidebar or generate_clicked_main:
     with st.spinner("Analyzing job description(s) with Azure OpenAI..."):
         for idx, jd in enumerate(job_descriptions):
             role_name = role_name_from_jobdesc(jd, idx)
-            user_prompt = f"Here is the job description:\n\n{jd}"
+            user_prompt = f"Here is the job description or job title:\n\n{jd}"
 
             try:
                 resp = client.chat.completions.create(
@@ -423,6 +428,23 @@ if generate_clicked_sidebar or generate_clicked_main:
             except Exception as e:
                 st.error(f"OpenAI call failed for {role_name}: {e}")
                 output_text = ""
+
+            # Fallback: if the model returned nothing, try an inferred-tasks prompt
+            if not output_text or not output_text.strip():
+                st.warning(f"No detailed output from model for {role_name}. Using inferred tasks fallback.")
+                fallback_prompt = f"Please generate typical tasks for the role '{role_name}' (as used in hospitality/Club Med) and evaluate them following the instructions."
+                try:
+                    resp = client.chat.completions.create(
+                        model=AZURE_OPENAI_DEPLOYMENT,
+                        messages=[
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": fallback_prompt},
+                        ]
+                    )
+                    output_text = resp.choices[0].message.content
+                except Exception as e:
+                    st.error(f"Fallback OpenAI call failed for {role_name}: {e}")
+                    output_text = ""
 
             st.markdown(f"### 📊 Generated Report — **{role_name}**")
             if output_text:
@@ -505,7 +527,6 @@ if generate_clicked_sidebar or generate_clicked_main:
                 s = str(val).strip()
                 if "%" in s and ("/" in s or "up" in s.lower()):
                     return s
-                # Try extract number
                 m = re.search(r'(\d{1,3})', s)
                 if m:
                     num = int(m.group(1))
@@ -679,9 +700,6 @@ with col_b:
             else:
                 new_tasks["Task Transformation %"] = None
 
-            # Ensure ai impact column exists, map names as necessary
-            # upsert_all_jobs_sql will normalize further
-
             try:
                 upsert_all_jobs_sql(engine, new_tasks)
                 # prepare synthesis rows for DB
@@ -700,8 +718,7 @@ with col_b:
             except Exception as e:
                 st.error(f"Failed to update Database: {e}")
 
-            # Optionally clear buffers after DB commit — keeping as behavior decision.
-            # We'll clear buffers to avoid re-committing same rows unless user re-generates.
+            # Clear buffers after DB commit to avoid duplicate commits
             st.session_state["new_reports"].clear()
             st.session_state["new_synthesis"].clear()
             st.session_state["new_jd_text"].clear()
