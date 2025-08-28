@@ -319,11 +319,12 @@ col1, col2 = st.columns([1, 1])
 with col1:
     generate_clicked_main = st.button("🚀 Generate Report", type="primary")
 with col2:
+    powerbi_url = "https://app.powerbi.com/view?r=eyJrIjoiMDFhMGVlOGItOTY5MC00ZTRhLWI5ZTEtNmMwNDQxNTUzNTNmIiwidCI6IjA3NmEzOTkyLTA0ZjgtNDcwMC05ODQ0LTA4YzM3NDc3NzdlZiJ9"  
     st.markdown(
-        """
-        <a href="#" target="_blank">
-            <button style="background-color:#0078D4; color:white; padding:0.6em 1.2em; border:none; border-radius:8px;">
-                📊 Open Dashboard (placeholder)
+        f"""
+        <a href="{powerbi_url}" target="_blank">
+            <button style="background-color:#0078D4; color:white; padding:0.6em 1.2em; border:none; border-radius:8px; cursor:pointer;">
+                📊 Open Dashboard
             </button>
         </a>
         """,
@@ -699,6 +700,8 @@ with col_b:
             except Exception as e:
                 st.error(f"Failed to update Database: {e}")
 
+            # Optionally clear buffers after DB commit — keeping as behavior decision.
+            # We'll clear buffers to avoid re-committing same rows unless user re-generates.
             st.session_state["new_reports"].clear()
             st.session_state["new_synthesis"].clear()
             st.session_state["new_jd_text"].clear()
