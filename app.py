@@ -175,6 +175,7 @@ def ensure_sql_schema(engine: sa.Engine):
             task_transformation TEXT,
             tooling_nature TEXT,
             job_category TEXT,
+            Automation_Solution TEXT,
             run_id TEXT,
             jd_hash TEXT,
             task_norm TEXT,
@@ -204,6 +205,7 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
         "Task Transformation %",
         "Tooling nature % generic vs specific",
         "Job Category",
+        "Automation Solution",
         "Run ID",
         "JD Hash",
         "task_norm"
@@ -226,6 +228,8 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
             col_map[c] = "Task Transformation %"
         elif "tooling" in lower:
             col_map[c] = "Tooling nature % generic vs specific"
+        elif "automation solution" in lower or ("solution" in lower and "automation" in lower):
+            col_map[c] = "Automation Solution"
         elif "job title" in lower or lower == "title":
             col_map[c] = "Job Title"
         elif lower in ["run id", "run_id", "runid"]:
@@ -250,9 +254,9 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
     insert_stmt = text("""
         INSERT INTO all_jobs
         (job_title, task, time_allocation, ai_impact_score, impact_explanation,
-         task_transformation, tooling_nature, job_category, run_id, jd_hash, task_norm)
+         task_transformation, tooling_nature, job_category, Automation_Solution, run_id, jd_hash, task_norm)
         VALUES (:job_title, :task, :time_allocation, :ai_impact_score, :impact_explanation,
-                :task_transformation, :tooling_nature, :job_category, :run_id, :jd_hash, :task_norm)
+                :task_transformation, :tooling_nature, :job_category, :Automation_Solution, :run_id, :jd_hash, :task_norm)
         ON CONFLICT (job_title, task_norm) DO UPDATE SET
             time_allocation = EXCLUDED.time_allocation,
             ai_impact_score = EXCLUDED.ai_impact_score,
@@ -260,6 +264,7 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
             task_transformation = EXCLUDED.task_transformation,
             tooling_nature = EXCLUDED.tooling_nature,
             job_category = EXCLUDED.job_category,
+            Automation_Solution = Excluded.Automation_Solution,
             run_id = EXCLUDED.run_id,
             jd_hash = EXCLUDED.jd_hash;
     """)
@@ -274,6 +279,7 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
             "task_transformation": r.get("Task Transformation %"),
             "tooling_nature": r.get("Tooling nature % generic vs specific"),
             "job_category": r.get("Job Category"),
+            "Automation_Solution": r.get("Automation Solution"),
             "run_id": r.get("Run ID"),
             "jd_hash": r.get("JD Hash"),
             "task_norm": r.get("task_norm")
@@ -361,7 +367,7 @@ Input: You will receive either
 If only a job title is given, infer the typical tasks and responsibilities for that role at Club Med or in the hospitality industry, and continue as if a full description was provided.
 
 Output: Produce a table – one line per task – with the following six columns: 
-| Task | Job Category | Time allocation % | AI Impact Score (0–100) | Impact Explanation | Task Transformation % | Tooling nature % generic vs specific |
+| Task | Job Category | Time allocation % | AI Impact Score (0–100) | Impact Explanation | Task Transformation % | Tooling nature % generic vs specific | Automation Solution |
 
 Task – concise verb-phrase copied, paraphrased, or reasonably inferred from the job title or description. 
 Job Category - one of: IT, Marketing, HR, Finance, Operations, Legal, R&D, Customer Service, Other.
@@ -370,6 +376,7 @@ AI Impact Score – how strongly Gen-AI could affect the task (0 = no impact, 10
 Impact Explanation – 2–3 sentences justifying the chosen score. Write the Impact Explanation in French.
 Task Transformation % – proportion of the task likely to change for the employee (e.g., 70% up-skilling vs 30% pure automation). Always express as two percentages that sum to 100 in the format "XX% up-skilling / YY% automation".
 Tooling nature – split the AI tooling you foresee into generic (ChatGPT-like) vs domain-specific (custom models or vertical SaaS). Express as two numbers that sum to 100.
+Automation Solution – briefly describe a realistic Gen-AI solution (e.g., "custom GPT-4 powered chatbot", "AI-assisted code generation tool", "AI-driven marketing content generator").
 
 Procedure
 A. If a detailed description is given: scan the description and list every distinct, non-trivial activity. 
@@ -467,7 +474,8 @@ if generate_clicked_sidebar or generate_clicked_main:
                         "Time allocation %": [None],
                         "Impact Explanation": [None],
                         "Task Transformation %": [None],
-                        "Tooling nature % generic vs specific": [None]
+                        "Tooling nature % generic vs specific": [None],
+                        "Automation Solution": [None]
                     })
 
             if "Job Title" not in parsed_df.columns:
@@ -492,6 +500,8 @@ if generate_clicked_sidebar or generate_clicked_main:
                     canonical_map[col] = "Task Transformation %"
                 elif "tooling" in lc:
                     canonical_map[col] = "Tooling nature % generic vs specific"
+                elif "automation solution" in lc or ("solution" in lc and "automation" in lc):
+                    canonical_map[col] = "Automation Solution"
                 elif lc in ["job title", "title"]:
                     canonical_map[col] = "Job Title"
             if canonical_map:
@@ -504,7 +514,8 @@ if generate_clicked_sidebar or generate_clicked_main:
                 "AI Impact Score (0–100)",
                 "Impact Explanation",
                 "Task Transformation %",
-                "Tooling nature % generic vs specific"
+                "Tooling nature % generic vs specific",
+                "Automation Solution"
             ]:
                 if col not in parsed_df.columns:
                     parsed_df[col] = None
@@ -640,6 +651,7 @@ with col_a:
             "Impact Explanation",
             "Task Transformation %",
             "Tooling nature % generic vs specific",
+            "Automation Solution",
             "Run ID",
             "JD Hash"
         ]
