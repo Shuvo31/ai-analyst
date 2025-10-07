@@ -177,6 +177,7 @@ def ensure_sql_schema(engine: sa.Engine):
             job_category TEXT,
             Automation_Solution TEXT,
             AI_Automation_Complexity TEXT,
+            Upskilling_Suggestion TEXT,
             run_id TEXT,
             jd_hash TEXT,
             task_norm TEXT,
@@ -208,6 +209,7 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
         "Job Category",
         "Automation Solution",
         "AI Automation Complexity",
+        "Upskilling Suggestion",
         "Run ID",
         "JD Hash",
         "task_norm"
@@ -234,6 +236,8 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
             col_map[c] = "Automation Solution"
         elif "ai automation complexity" in lower or ("complexity" in lower and "automation" in lower):
             col_map[c] = "AI Automation Complexity"
+        elif "upskilling suggestion" in lower or ("upskilling" in lower and "suggestion" in lower):
+            col_map[c] = "Upskilling Suggestion"
         elif "job title" in lower or lower == "title":
             col_map[c] = "Job Title"
         elif lower in ["run id", "run_id", "runid"]:
@@ -258,9 +262,9 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
     insert_stmt = text("""
         INSERT INTO all_jobs
         (job_title, task, time_allocation, ai_impact_score, impact_explanation,
-         task_transformation, tooling_nature, job_category, Automation_Solution, AI_Automation_Complexity, run_id, jd_hash, task_norm)
+         task_transformation, tooling_nature, job_category, Automation_Solution, AI_Automation_Complexity, Upskilling_Suggestion, run_id, jd_hash, task_norm)
         VALUES (:job_title, :task, :time_allocation, :ai_impact_score, :impact_explanation,
-                :task_transformation, :tooling_nature, :job_category, :Automation_Solution, :AI_Automation_Complexity, :run_id, :jd_hash, :task_norm)
+                :task_transformation, :tooling_nature, :job_category, :Automation_Solution, :AI_Automation_Complexity,:Upskilling_Suggestion, :run_id, :jd_hash, :task_norm)
         ON CONFLICT (job_title, task_norm) DO UPDATE SET
             time_allocation = EXCLUDED.time_allocation,
             ai_impact_score = EXCLUDED.ai_impact_score,
@@ -270,6 +274,7 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
             job_category = EXCLUDED.job_category,
             Automation_Solution = Excluded.Automation_Solution,
             AI_Automation_Complexity = Excluded.AI_Automation_Complexity,
+            Upskilling_Suggestion = Excluded.Upskilling_Suggestion,
             run_id = EXCLUDED.run_id,
             jd_hash = EXCLUDED.jd_hash;
     """)
@@ -286,6 +291,7 @@ def upsert_all_jobs_sql(engine: sa.Engine, df: pd.DataFrame):
             "job_category": r.get("Job Category"),
             "Automation_Solution": r.get("Automation Solution"),
             "AI_Automation_Complexity": r.get("AI Automation Complexity"),
+            "Upskilling_Suggestion": r.get("Upskilling Suggestion"),
             "run_id": r.get("Run ID"),
             "jd_hash": r.get("JD Hash"),
             "task_norm": r.get("task_norm")
@@ -373,7 +379,7 @@ Input: You will receive either
 If only a job title is given, infer the typical tasks and responsibilities for that role at Club Med or in the hospitality industry, and continue as if a full description was provided.
 
 Output: Produce a table – one line per task – with the following six columns: 
-| Task | Job Category | Time allocation % | AI Impact Score (0–100) | Impact Explanation | Task Transformation % | Tooling nature % generic vs specific | Automation Solution | AI Automation Complexity |
+| Task | Job Category | Time allocation % | AI Impact Score (0–100) | Impact Explanation | Task Transformation % | Tooling nature % generic vs specific | Automation Solution | AI Automation Complexity | Upskilling Suggestion |
 
 Task – concise verb-phrase copied, paraphrased, or reasonably inferred from the job title or description. 
 Job Category - one of: IT, Marketing, HR, Finance, Operations, Legal, R&D, Customer Service, Other.
@@ -384,6 +390,7 @@ Task Transformation % – proportion of the task likely to change for the employ
 Tooling nature – split the AI tooling you foresee into generic (ChatGPT-like) vs domain-specific (custom models or vertical SaaS). Express as two numbers that sum to 100.
 Automation Solution – briefly describe a realistic Gen-AI solution (e.g., "custom GPT-4 powered chatbot", "AI-assisted code generation tool", "AI-driven marketing content generator").
 AI Automation Complexity – rate the complexity of building and deploying the AI solution (1 = very simple, 5 = very complex).
+Upskilling Suggestion – Suggest one or two key skills the employee should develop to thrive in an AI-augmented version of this task. Write the Upskilling Suggestion only in French.
 
 Procedure
 A. If a detailed description is given: scan the description and list every distinct, non-trivial activity. 
@@ -483,7 +490,8 @@ if generate_clicked_sidebar or generate_clicked_main:
                         "Task Transformation %": [None],
                         "Tooling nature % generic vs specific": [None],
                         "Automation Solution": [None],
-                        "AI Automation Complexity": [None]
+                        "AI Automation Complexity": [None],
+                        "Upskilling Suggestion": [None]
                     })
 
             if "Job Title" not in parsed_df.columns:
@@ -512,6 +520,8 @@ if generate_clicked_sidebar or generate_clicked_main:
                     canonical_map[col] = "Automation Solution"
                 elif "ai automation complexity" in lc or ("complexity" in lc and "automation" in lc):
                     canonical_map[col] = "AI Automation Complexity"
+                elif "upskilling suggestion" in lc or ("upskilling" in lc and "suggestion" in lc):
+                    canonical_map[col] = "Upskilling Suggestion"
                 elif lc in ["job title", "title"]:
                     canonical_map[col] = "Job Title"
             if canonical_map:
@@ -526,7 +536,8 @@ if generate_clicked_sidebar or generate_clicked_main:
                 "Task Transformation %",
                 "Tooling nature % generic vs specific",
                 "Automation Solution",
-                "AI Automation Complexity"
+                "AI Automation Complexity",
+                "Upskilling Suggestion"
             ]:
                 if col not in parsed_df.columns:
                     parsed_df[col] = None
@@ -664,6 +675,7 @@ with col_a:
             "Tooling nature % generic vs specific",
             "Automation Solution",
             "AI Automation Complexity",
+            "Upskilling Suggestion",
             "Run ID",
             "JD Hash"
         ]
