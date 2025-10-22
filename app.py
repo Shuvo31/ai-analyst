@@ -44,8 +44,8 @@ MASTER_XLSX = "genai_job_impact_master.xlsx"
 ALL_JOBS_SHEET = "All Jobs"
 SYNTHESIS_SHEET = "Synthesis"
 
-st.set_page_config(page_title="GenAI Job Impact Analyst — Postgres (Render)", layout="wide")
-st.title("💼 GenAI Job Impact Analyst — Postgres (Render)")
+st.set_page_config(page_title="GenAI Job Impact Analyst", layout="wide")
+st.title("💼 GenAI Job Impact Analyst")
 
 # -------------------------
 # Initialize Azure OpenAI client
@@ -758,3 +758,49 @@ with col_b:
             st.session_state["new_reports"].clear()
             st.session_state["new_synthesis"].clear()
             st.session_state["new_jd_text"].clear()
+
+# -------------------------
+# Search & Filter Existing Data (from Postgres)
+# -------------------------
+st.divider()
+st.subheader("🔍 Search Generated Data (from Database)")
+
+if engine is not None:
+    search_term = st.text_input("Enter Job Title or part of Job Description to search:")
+
+    if search_term:
+        query = text("""
+            SELECT 
+                job_title, task, time_allocation, ai_impact_score,
+                impact_explanation, task_transformation, tooling_nature,
+                job_category, automation_solution, ai_automation_complexity,
+                upskilling_suggestion, run_id, jd_hash
+            FROM all_jobs
+            WHERE job_title ILIKE :term
+               OR task ILIKE :term
+               OR impact_explanation ILIKE :term
+            ORDER BY job_title;
+        """)
+        try:
+            with engine.connect() as conn:
+                df_results = pd.read_sql(query, conn, params={"term": f"%{search_term}%"})
+            if not df_results.empty:
+                st.success(f"Found {len(df_results)} matching records.")
+                st.dataframe(df_results, use_container_width=True)
+
+                # Optionally, download the filtered results
+                csv = df_results.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📥 Download Filtered Results (CSV)",
+                    data=csv,
+                    file_name=f"filtered_results_{search_term}.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.warning("No results found for your search.")
+        except Exception as e:
+            st.error(f"Error fetching data: {e}")
+    else:
+        st.info("Enter a keyword (e.g., 'Manager', 'HR', or 'Marketing') to search generated data.")
+else:
+    st.warning("Database not connected — cannot search previous results.")
