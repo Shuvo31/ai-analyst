@@ -760,47 +760,54 @@ with col_b:
             st.session_state["new_jd_text"].clear()
 
 # -------------------------
-# Search & Filter Existing Data (from Postgres)
+# Dropdown Filter: View Data by Job Title
 # -------------------------
 st.divider()
-st.subheader("🔍 Search Generated Data (from Database)")
+st.subheader("📂 View Generated Data by Job Title")
 
 if engine is not None:
-    search_term = st.text_input("Enter Job Title or part of Job Description to search:")
+    try:
+        # Step 1: Fetch all unique job titles from database
+        with engine.connect() as conn:
+            df_titles = pd.read_sql("SELECT DISTINCT job_title FROM all_jobs ORDER BY job_title;", conn)
 
-    if search_term:
-        query = text("""
-            SELECT 
-                job_title, task, time_allocation, ai_impact_score,
-                impact_explanation, task_transformation, tooling_nature,
-                job_category, automation_solution, ai_automation_complexity,
-                upskilling_suggestion, run_id, jd_hash
-            FROM all_jobs
-            WHERE job_title ILIKE :term
-               OR task ILIKE :term
-               OR impact_explanation ILIKE :term
-            ORDER BY job_title;
-        """)
-        try:
-            with engine.connect() as conn:
-                df_results = pd.read_sql(query, conn, params={"term": f"%{search_term}%"})
-            if not df_results.empty:
-                st.success(f"Found {len(df_results)} matching records.")
-                st.dataframe(df_results, use_container_width=True)
+        if not df_titles.empty:
+            # Step 2: Dropdown to select job title
+            selected_title = st.selectbox(
+                "Select a Job Title to View Its Generated Data:",
+                df_titles['job_title'].tolist(),
+                index=None,
+                placeholder="Choose a job title..."
+            )
 
-                # Optionally, download the filtered results
-                csv = df_results.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="📥 Download Filtered Results (CSV)",
-                    data=csv,
-                    file_name=f"filtered_results_{search_term}.csv",
-                    mime="text/csv"
-                )
-            else:
-                st.warning("No results found for your search.")
-        except Exception as e:
-            st.error(f"Error fetching data: {e}")
-    else:
-        st.info("Enter a keyword (e.g., 'Manager', 'HR', or 'Marketing') to search generated data.")
+            # Step 3: When a title is selected, show related data
+            if selected_title:
+                with engine.connect() as conn:
+                    query_data = text("""
+                        SELECT *
+                        FROM all_jobs
+                        WHERE job_title = :title
+                        ORDER BY task;
+                    """)
+                    df_selected = pd.read_sql(query_data, conn, params={"title": selected_title})
+
+                if not df_selected.empty:
+                    st.success(f"Showing results for: **{selected_title}**")
+                    st.dataframe(df_selected, use_container_width=True)
+
+                    # Optional: Download CSV button
+                    csv = df_selected.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Download Data for This Job Title (CSV)",
+                        data=csv,
+                        file_name=f"{selected_title.replace(' ', '_')}_data.csv",
+                        mime="text/csv"
+                    )
+                else:
+                    st.warning("No data found for the selected job title.")
+        else:
+            st.info("No job titles found in the database.")
+    except Exception as e:
+        st.error(f"Error fetching data: {e}")
 else:
-    st.warning("Database not connected — cannot search previous results.")
+    st.warning("Database not connected — please check your connection settings.")
